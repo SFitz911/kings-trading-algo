@@ -21,7 +21,8 @@ class Config:
     rsi_period: int
     rsi_entry: float
     rsi_exit: float
-    order_notional: float
+    target_qty: float
+    fallback_equity_pct: float
     poll_seconds: int
 
 
@@ -40,6 +41,7 @@ def load_config() -> Config:
         rsi_period=int(os.getenv("RSI_PERIOD", "14")),
         rsi_entry=float(os.getenv("RSI_ENTRY", "50")),
         rsi_exit=float(os.getenv("RSI_EXIT", "50")),
-        order_notional=float(os.getenv("ORDER_NOTIONAL", "1000")),
+        target_qty=float(os.getenv("TARGET_QTY", "1")),
+        fallback_equity_pct=float(os.getenv("FALLBACK_EQUITY_PCT", "0.75")),
         poll_seconds=int(os.getenv("POLL_SECONDS", "60")),
     )

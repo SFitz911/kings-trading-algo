@@ -9,6 +9,7 @@ import matplotlib
 
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.ticker as mticker
 from matplotlib.figure import Figure
 
 from . import theme
@@ -20,7 +21,7 @@ CHART_BARS = 120
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 
-STAT_CARDS = ("price", "rsi", "position", "equity", "signal")
+STAT_CARDS = ("price", "rsi", "position", "pnl", "equity", "signal")
 
 
 class Dashboard(tk.Tk):
@@ -36,10 +37,12 @@ class Dashboard(tk.Tk):
         self.configure(bg=theme.BG)
 
         self._stats: dict[str, tk.Label] = {}
+        self._substats: dict[str, tk.Label] = {}
         self._build_header()
         self._build_stats()
         self._build_body()
         self._render(self._engine.state)
+        self._engine.start_price_feed()
         self.after(REFRESH_MS, self._drain)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -80,6 +83,7 @@ class Dashboard(tk.Tk):
             "price": "BTC PRICE",
             "rsi": f"RSI({self._config.rsi_period}) 5H",
             "position": "POSITION",
+            "pnl": "UNREALIZED P&L",
             "equity": "EQUITY",
             "signal": "LAST SIGNAL",
         }
@@ -95,8 +99,12 @@ class Dashboard(tk.Tk):
                      fg=theme.MUTED).pack(anchor="w", padx=14, pady=(10, 0))
             value = tk.Label(card, text="--", font=theme.FONT_STAT,
                              bg=theme.PANEL, fg=theme.TEXT)
-            value.pack(anchor="w", padx=14, pady=(0, 12))
+            value.pack(anchor="w", padx=14, pady=(0, 0))
             self._stats[key] = value
+            sub = tk.Label(card, text=" ", font=theme.FONT_LABEL,
+                           bg=theme.PANEL, fg=theme.MUTED)
+            sub.pack(anchor="w", padx=14, pady=(0, 10))
+            self._substats[key] = sub
 
     def _build_body(self) -> None:
         body = tk.Frame(self, bg=theme.BG)
@@ -156,7 +164,7 @@ class Dashboard(tk.Tk):
             self.after(0, lambda: self._blitz_button.configure(state="normal"))
 
     def _on_close(self) -> None:
-        self._engine.stop()
+        self._engine.shutdown()
         self.destroy()
 
     # -- rendering ---------------------------------------------------------
@@ -176,6 +184,9 @@ class Dashboard(tk.Tk):
         self._stats["position"].configure(
             text=f"{state.position_qty:.5f}" if state.position_qty else "FLAT",
             fg=theme.GREEN if state.position_qty else theme.MUTED)
+        self._substats["position"].configure(
+            text=f"entry ${state.avg_entry:,.2f}" if state.position_qty else " ")
+        self._render_pnl(state)
         self._stats["equity"].configure(text=f"${state.equity:,.0f}" if state.equity else "--")
         self._stats["signal"].configure(
             text=state.last_signal,
@@ -193,6 +204,21 @@ class Dashboard(tk.Tk):
         self._render_log(state.events)
         if state.bars is not None and state.rsi_series is not None:
             self._render_charts(state)
+
+    def _render_pnl(self, state: BotState) -> None:
+        """Live unrealized P&L on the open position; blank when flat."""
+        if not state.position_qty:
+            self._stats["pnl"].configure(text="--", fg=theme.MUTED)
+            self._substats["pnl"].configure(text=" ")
+            return
+
+        pnl = state.unrealized_pnl
+        color = theme.GREEN if pnl > 0 else theme.RED if pnl < 0 else theme.TEXT
+        sign = "+" if pnl > 0 else "-" if pnl < 0 else ""
+        self._stats["pnl"].configure(text=f"{sign}${abs(pnl):,.2f}", fg=color)
+        self._substats["pnl"].configure(
+            text=f"{sign}{abs(state.unrealized_pnl_pct):.2f}%   mark ${state.price:,.2f}",
+            fg=color)
 
     def _render_log(self, events: list[str]) -> None:
         self._log.configure(state="normal")
@@ -221,6 +247,8 @@ class Dashboard(tk.Tk):
             self._price_axes.set_ylabel(f"{self._config.symbol}  (5H close)")
             self._price_axes.grid(alpha=0.25, linewidth=0.5)
             self._price_axes.tick_params(labelbottom=False)
+            self._price_axes.yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda value, _: f"${value:,.0f}"))
 
             self._rsi_axes.clear()
             self._rsi_axes.plot(rsi_values.index, rsi_values, color=theme.TEXT, linewidth=1.2)
@@ -236,4 +264,14 @@ class Dashboard(tk.Tk):
             self._rsi_axes.set_ylim(0, 100)
             self._rsi_axes.set_ylabel(f"RSI {self._config.rsi_period}")
             self._rsi_axes.grid(alpha=0.25, linewidth=0.5)
+
+        # Applied after every clear(): axes.clear() resets artist colors, which is
+        # what left the price panel ticks unreadable against the dark background.
+        for axes in (self._price_axes, self._rsi_axes):
+            axes.tick_params(axis="both", colors=theme.AXIS, labelsize=8)
+            axes.yaxis.label.set_color(theme.AXIS)
+            axes.xaxis.label.set_color(theme.AXIS)
+            axes.yaxis.get_offset_text().set_color(theme.AXIS)
+            for spine in axes.spines.values():
+                spine.set_edgecolor(theme.BORDER)
         self._chart.draw_idle()

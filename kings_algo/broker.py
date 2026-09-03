@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from dataclasses import dataclass
+
 import pandas as pd
 from alpaca.data.historical import CryptoHistoricalDataClient
-from alpaca.data.requests import CryptoBarsRequest
+from alpaca.data.requests import CryptoBarsRequest, CryptoLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -15,6 +17,19 @@ from .config import Config
 
 BAR_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Hour)
 HISTORY_DAYS = 60
+
+
+@dataclass(frozen=True)
+class Position:
+    """Open long position, or the flat placeholder from `Position.flat()`."""
+    qty: float
+    avg_entry: float
+    unrealized_pnl: float
+    unrealized_pnl_pct: float
+
+    @staticmethod
+    def flat() -> "Position":
+        return Position(0.0, 0.0, 0.0, 0.0)
 
 
 class Broker:
@@ -35,18 +50,50 @@ class Broker:
             raise RuntimeError(f"No bars returned for {self._config.symbol}")
         return frame.reset_index().set_index("timestamp").sort_index()
 
-    def position_qty(self) -> float:
-        """Open long quantity for the symbol, or 0.0 when flat."""
+    def latest_price(self) -> float:
+        """Live mark for tick-by-tick P&L. Uses the quote midpoint: trades on this
+        feed can be minutes stale, while quotes refresh continuously."""
+        request = CryptoLatestQuoteRequest(symbol_or_symbols=[self._config.symbol])
+        quote = self._data.get_crypto_latest_quote(request)[self._config.symbol]
+        bid, ask = float(quote.bid_price), float(quote.ask_price)
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return bid or ask
+
+    def position(self) -> Position:
+        """Open long position for the symbol, or a flat placeholder."""
         key = self._config.symbol.replace("/", "")
-        for position in self._trading.get_all_positions():
-            if position.symbol.replace("/", "") == key:
-                return float(position.qty)
-        return 0.0
+        for open_position in self._trading.get_all_positions():
+            if open_position.symbol.replace("/", "") == key:
+                return Position(
+                    qty=float(open_position.qty),
+                    avg_entry=float(open_position.avg_entry_price),
+                    unrealized_pnl=float(open_position.unrealized_pl or 0.0),
+                    unrealized_pnl_pct=float(open_position.unrealized_plpc or 0.0) * 100,
+                )
+        return Position.flat()
+
+    def position_qty(self) -> float:
+        return self.position().qty
 
     def account_equity(self) -> float:
         return float(self._trading.get_account().equity)
 
-    def buy(self, notional: float):
+    def buying_power(self) -> float:
+        account = self._trading.get_account()
+        return float(account.non_marginable_buying_power or account.buying_power)
+
+    def buy_qty(self, qty: float):
+        return self._trading.submit_order(
+            MarketOrderRequest(
+                symbol=self._config.symbol,
+                qty=round(qty, 8),
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC,
+            )
+        )
+
+    def buy_notional(self, notional: float):
         return self._trading.submit_order(
             MarketOrderRequest(
                 symbol=self._config.symbol,

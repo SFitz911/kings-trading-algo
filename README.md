@@ -14,7 +14,7 @@ signals never repaint):
 
 | Condition | Action |
 |---|---|
-| RSI crosses **up** through `RSI_ENTRY` (default 50) while flat | BUY `ORDER_NOTIONAL` worth of BTC |
+| RSI crosses **up** through `RSI_ENTRY` (default 50) while flat | BUY `TARGET_QTY` whole BTC |
 | RSI crosses **down** through `RSI_EXIT` (default 50) while long | SELL the entire position |
 | anything else | hold |
 
@@ -30,8 +30,18 @@ python run.py
 ```
 
 Press **START BOT**. The dashboard polls every `POLL_SECONDS` (default 60) and shows price,
-live RSI, position, account equity, the last signal, a 5H price/RSI chart, and an activity log.
-Every fill is also appended to `trades.csv`.
+live RSI, position, unrealized P&L, account equity, the last signal, a 5H price/RSI chart,
+and an activity log. Every fill is also appended to `trades.csv`.
+
+**Position sizing:** each entry buys `TARGET_QTY` whole tokens (default 1 BTC). If buying power
+cannot cover that, it falls back to spending `FALLBACK_EQUITY_PCT` of account equity instead.
+Alpaca takes its crypto fee out of the received quantity, so a 1 BTC buy settles as ~0.9975 BTC.
+
+**BLITZ TEST button:** sends a manual market buy ignoring the RSI signal; click again to close
+the position. Useful for confirming the wiring end to end.
+
+**Live P&L:** unrealized P&L is marked against the quote midpoint and refreshes every 3 seconds,
+independently of the 5-hour bar poll.
 
 ## Configuration (`.env`)
 
@@ -42,7 +52,8 @@ Every fill is also appended to `trades.csv`.
 | `RSI_PERIOD` | `14` | RSI lookback in 5H bars |
 | `RSI_ENTRY` | `50` | cross-up level that opens a long |
 | `RSI_EXIT` | `50` | cross-down level that closes it |
-| `ORDER_NOTIONAL` | `1000` | dollars per entry (capped at 95% of equity) |
+| `TARGET_QTY` | `1` | whole tokens to buy per entry |
+| `FALLBACK_EQUITY_PCT` | `0.75` | fraction of equity spent when `TARGET_QTY` is unaffordable |
 | `POLL_SECONDS` | `60` | poll interval |
 
 ## Layout

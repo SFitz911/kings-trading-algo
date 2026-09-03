@@ -15,6 +15,9 @@ from .config import TRADE_LOG_PATH, Config
 from .strategy import Signal, decide, rsi
 
 MAX_EVENTS = 200
+PRICE_TICK_SECONDS = 3
+COST_BUFFER = 1.002  # headroom so a market order does not slip past buying power
+MIN_NOTIONAL = 1.0
 
 
 @dataclass
@@ -26,6 +29,9 @@ class BotState:
     rsi: float = 0.0
     equity: float = 0.0
     position_qty: float = 0.0
+    avg_entry: float = 0.0
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_pct: float = 0.0
     last_signal: str = Signal.HOLD.value
     last_bar_time: str = "--"
     error: str = ""
@@ -42,7 +48,9 @@ class TradingEngine:
         self._on_update = on_update
         self._broker = Broker(config)
         self._stop = threading.Event()
+        self._stop_ticker = threading.Event()
         self._thread: threading.Thread | None = None
+        self._ticker: threading.Thread | None = None
         self._events: list[str] = []
         self._last_traded_bar: pd.Timestamp | None = None
         self.state = BotState()
@@ -54,6 +62,46 @@ class TradingEngine:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def start_price_feed(self) -> None:
+        """Fast loop for live price and unrealized P&L, independent of the bar poll
+        so numbers keep moving whether or not the strategy is running."""
+        if self._ticker and self._ticker.is_alive():
+            return
+        self._stop_ticker.clear()
+        self._ticker = threading.Thread(target=self._tick_loop, daemon=True)
+        self._ticker.start()
+
+    def shutdown(self) -> None:
+        self.stop()
+        self._stop_ticker.set()
+
+    def _tick_loop(self) -> None:
+        while not self._stop_ticker.is_set():
+            try:
+                self._tick()
+            except Exception as error:
+                print(f"price tick failed: {error}")
+            self._stop_ticker.wait(PRICE_TICK_SECONDS)
+
+    def _tick(self) -> None:
+        """Refresh price and P&L only; bars, RSI and signals are left untouched."""
+        position = self._broker.position()
+        price = self._broker.latest_price()
+        # Marked against the live trade price rather than Alpaca's slower position
+        # mark, so the number moves on every tick.
+        pnl = (price - position.avg_entry) * position.qty if position.qty else 0.0
+        cost = position.avg_entry * position.qty
+        self.state = BotState(**{
+            **self.state.__dict__,
+            "connected": True,
+            "price": price,
+            "position_qty": position.qty,
+            "avg_entry": position.avg_entry,
+            "unrealized_pnl": pnl,
+            "unrealized_pnl_pct": (pnl / cost * 100) if cost else 0.0,
+        })
+        self._on_update(self.state)
 
     @property
     def is_running(self) -> bool:
@@ -124,7 +172,8 @@ class TradingEngine:
         # The newest bar is still forming; only completed 5H candles produce signals.
         closed = bars.iloc[:-1]
         rsi_series = rsi(closed["close"], self._config.rsi_period)
-        qty = self._broker.position_qty()
+        position = self._broker.position()
+        qty = position.qty
         price = float(bars["close"].iloc[-1])
         bar_time = closed.index[-1]
 
@@ -140,6 +189,9 @@ class TradingEngine:
             rsi=float(rsi_series.dropna().iloc[-1]),
             equity=self._broker.account_equity(),
             position_qty=qty,
+            avg_entry=position.avg_entry,
+            unrealized_pnl=position.unrealized_pnl,
+            unrealized_pnl_pct=position.unrealized_pnl_pct,
             last_signal=signal.value,
             last_bar_time=bar_time.strftime("%Y-%m-%d %H:%M UTC"),
             error="",
@@ -151,16 +203,35 @@ class TradingEngine:
 
     def _execute(self, signal: Signal, qty: float, price: float, rsi_value: float) -> float:
         if signal is Signal.BUY:
-            notional = min(self._config.order_notional, self._broker.account_equity() * 0.95)
-            if notional < 1:
-                self._log("BUY skipped: insufficient buying power")
-                return qty
-            self._broker.buy(notional)
-            self._log(f"BUY  ${notional:,.2f} @ ~${price:,.2f} (RSI {rsi_value:.1f})")
-            self._record_trade("BUY", notional / price, price, rsi_value)
-            return notional / price
+            return self._buy(price, rsi_value, qty)
 
         self._broker.sell(qty)
         self._log(f"SELL {qty:.6f} @ ~${price:,.2f} (RSI {rsi_value:.1f})")
         self._record_trade("SELL", qty, price, rsi_value)
         return 0.0
+
+    def _buy(self, price: float, rsi_value: float, current_qty: float) -> float:
+        """Buy one whole token when affordable; otherwise fall back to spending
+        a fixed percentage of account equity."""
+        target = self._config.target_qty
+        buying_power = self._broker.buying_power()
+
+        if buying_power >= target * price * COST_BUFFER:
+            self._broker.buy_qty(target)
+            self._log(f"BUY  {target:g} {self._config.symbol.split('/')[0]} "
+                      f"@ ~${price:,.2f} (RSI {rsi_value:.1f})")
+            self._record_trade("BUY", target, price, rsi_value)
+            return target
+
+        notional = min(self._broker.account_equity() * self._config.fallback_equity_pct,
+                       buying_power / COST_BUFFER)
+        if notional < MIN_NOTIONAL:
+            self._log(f"BUY skipped: buying power ${buying_power:,.2f} too low")
+            return current_qty
+
+        self._broker.buy_notional(notional)
+        percent = self._config.fallback_equity_pct * 100
+        self._log(f"BUY  ${notional:,.2f} ({percent:g}% of equity - cannot afford "
+                  f"{target:g} whole) @ ~${price:,.2f} (RSI {rsi_value:.1f})")
+        self._record_trade("BUY", notional / price, price, rsi_value)
+        return notional / price
