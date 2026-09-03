@@ -31,7 +31,7 @@ python run.py
 ```
 
 Press **START BOT**. The dashboard polls every `POLL_SECONDS` (default 60) and shows price,
-live RSI, position, unrealized P&L, account equity, the last signal, a 5H price/RSI chart,
+live RSI, position, unrealized P&L, account equity, the last signal, price and RSI charts,
 and an activity log. Every fill is also appended to `trades.csv`.
 
 **Position sizing:** each entry buys `TARGET_QTY` whole tokens (default 1 BTC). If buying power
@@ -42,7 +42,7 @@ Alpaca takes its crypto fee out of the received quantity, so a 1 BTC buy settles
 the position. Useful for confirming the wiring end to end.
 
 **Live P&L:** unrealized P&L is marked against the quote midpoint and refreshes every 3 seconds,
-independently of the 5-hour bar poll.
+independently of the bar poll.
 
 ## Configuration (`.env`)
 
