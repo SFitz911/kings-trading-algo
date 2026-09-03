@@ -95,6 +95,8 @@ class TradingEngine:
         self.state = BotState(**{
             **self.state.__dict__,
             "connected": True,
+            "running": self.is_running,
+            "events": list(self._events),
             "price": price,
             "position_qty": position.qty,
             "avg_entry": position.avg_entry,

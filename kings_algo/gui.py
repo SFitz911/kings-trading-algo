@@ -191,6 +191,9 @@ class Dashboard(tk.Tk):
         self._stats["signal"].configure(
             text=state.last_signal,
             fg={"BUY": theme.GREEN, "SELL": theme.AMBER}.get(state.last_signal, theme.MUTED))
+        self._substats["signal"].configure(text=self._waiting_for(state))
+        self._substats["rsi"].configure(
+            text=f"{state.rsi - self._config.rsi_entry:+.1f} vs entry" if state.rsi else " ")
 
         if self._blitz_button["state"] != "disabled":
             self._blitz_button.configure(
@@ -204,6 +207,15 @@ class Dashboard(tk.Tk):
         self._render_log(state.events)
         if state.bars is not None and state.rsi_series is not None:
             self._render_charts(state)
+
+    def _waiting_for(self, state: BotState) -> str:
+        """Spell out the condition the bot is waiting on, so a running-but-idle
+        bot does not look like a broken one."""
+        if not state.running:
+            return "bot stopped"
+        if state.position_qty:
+            return f"exit on cross below {self._config.rsi_exit:g}"
+        return f"buy on cross above {self._config.rsi_entry:g}"
 
     def _render_pnl(self, state: BotState) -> None:
         """Live unrealized P&L on the open position; blank when flat."""
