@@ -2,9 +2,10 @@ name: trade
 
 on:
   schedule:
-    # Every 15 minutes. GitHub delays scheduled runs under load, which is fine
-    # for a 5-hour-bar strategy. Actions disables schedules after 60 days of
-    # repository inactivity - re-enable from the Actions tab if that happens.
+    # Every 15 minutes, matching the signal timeframe. GitHub delays scheduled
+    # runs under load, so a check can land late or be skipped; see the hosting
+    # notes in README.md. Actions disables schedules after 60 days of repository
+    # inactivity - re-enable from the Actions tab if that happens.
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
@@ -32,6 +33,8 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           SYMBOL: BTC/USD
+          SIGNAL_MINUTES: "15"
+          CHART_MINUTES: "1"
           RSI_PERIOD: "14"
           RSI_ENTRY: "50"
           RSI_EXIT: "50"

@@ -10,7 +10,7 @@ from typing import Callable
 
 import pandas as pd
 
-from .broker import Broker
+from .broker import CHART_LOOKBACK, SIGNAL_LOOKBACK, Broker
 from .config import TRADE_LOG_PATH, Config
 from .strategy import Signal, decide, rsi
 
@@ -37,6 +37,10 @@ class BotState:
     error: str = ""
     bars: pd.DataFrame | None = None
     rsi_series: pd.Series | None = None
+    # Provisional values for the bar still forming. Shown on the charts as a live
+    # dashed extension; never used for signals, which only read closed bars.
+    rsi_live: float = 0.0
+    forming_time: pd.Timestamp | None = None
     events: list[str] = field(default_factory=list)
 
 
@@ -53,6 +57,8 @@ class TradingEngine:
         self._ticker: threading.Thread | None = None
         self._events: list[str] = []
         self._last_traded_bar: pd.Timestamp | None = None
+        self._bar_length = pd.Timedelta(minutes=config.signal_minutes)
+        self._signal_close: pd.Series | None = None
         self.state = BotState()
 
     # -- lifecycle ---------------------------------------------------------
@@ -102,8 +108,13 @@ class TradingEngine:
         # mark, so the number moves on every tick.
         pnl = (price - position.avg_entry) * position.qty if position.qty else 0.0
         cost = position.avg_entry * position.qty
+        live = {}
+        if self.state.rsi_series is not None:
+            rsi_live, forming_time = self._provisional(self._signal_close, price)
+            live = {"rsi_live": rsi_live, "forming_time": forming_time}
         self.state = BotState(**{
             **self.state.__dict__,
+            **live,
             "connected": True,
             "running": self.is_running,
             "events": list(self._events),
@@ -122,7 +133,7 @@ class TradingEngine:
     def blitz(self) -> str:
         """Manual test trade, independent of the RSI signal: buy when flat,
         close the position when long. Returns the side that was sent."""
-        bars = self._broker.bars()
+        bars = self._broker.bars(self._config.signal_minutes, SIGNAL_LOOKBACK)
         qty = self._broker.position_qty()
         price = float(bars["close"].iloc[-1])
         rsi_now = float(rsi(bars["close"].iloc[:-1], self._config.rsi_period).dropna().iloc[-1])
@@ -144,6 +155,12 @@ class TradingEngine:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         self._events.append(f"[{stamp}Z] {message}")
         del self._events[:-MAX_EVENTS]
+
+    def _provisional(self, closed_close: pd.Series, price: float) -> tuple[float, pd.Timestamp]:
+        """RSI as it stands mid-bar, treating `price` as the forming bar's close."""
+        forming_time = closed_close.index[-1] + self._bar_length
+        series = pd.concat([closed_close, pd.Series([price], index=[forming_time])])
+        return float(rsi(series, self._config.rsi_period).dropna().iloc[-1]), forming_time
 
     def log_error(self, message: str) -> None:
         """Surface a failure from outside the polling loop (e.g. a manual trade)."""
@@ -180,14 +197,18 @@ class TradingEngine:
             self._stop.wait(self._config.poll_seconds)
 
     def _poll(self, trade: bool = True) -> None:
-        bars = self._broker.bars()
-        # The newest bar is still forming; only completed 5H candles produce signals.
+        bars = self._broker.bars(self._config.signal_minutes, SIGNAL_LOOKBACK)
+        # The newest bar is still forming; only completed candles produce signals.
         closed = bars.iloc[:-1]
+        chart_bars = self._broker.bars(self._config.chart_minutes, CHART_LOOKBACK)
         rsi_series = rsi(closed["close"], self._config.rsi_period)
         position = self._broker.position()
         qty = position.qty
         price = float(bars["close"].iloc[-1])
         bar_time = closed.index[-1]
+
+        self._signal_close = closed["close"]
+        rsi_live, forming_time = self._provisional(closed["close"], price)
 
         signal = decide(rsi_series, qty > 0, self._config.rsi_entry, self._config.rsi_exit)
         if trade and signal is not Signal.HOLD and bar_time != self._last_traded_bar:
@@ -207,8 +228,10 @@ class TradingEngine:
             last_signal=signal.value,
             last_bar_time=bar_time.strftime("%Y-%m-%d %H:%M UTC"),
             error="",
-            bars=closed,
+            bars=chart_bars,
             rsi_series=rsi_series,
+            rsi_live=rsi_live,
+            forming_time=forming_time,
             events=list(self._events),
         )
         self._on_update(self.state)

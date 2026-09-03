@@ -15,8 +15,8 @@ from alpaca.trading.requests import MarketOrderRequest
 
 from .config import Config
 
-BAR_TIMEFRAME = TimeFrame(5, TimeFrameUnit.Hour)
-HISTORY_DAYS = 60
+SIGNAL_LOOKBACK = timedelta(days=5)
+CHART_LOOKBACK = timedelta(hours=8)
 
 
 @dataclass(frozen=True)
@@ -38,12 +38,12 @@ class Broker:
         self._data = CryptoHistoricalDataClient(config.api_key, config.secret_key)
         self._trading = TradingClient(config.api_key, config.secret_key, paper=True)
 
-    def bars(self) -> pd.DataFrame:
-        """5-hour OHLCV bars for the configured symbol, oldest first."""
+    def bars(self, minutes: int, lookback: timedelta) -> pd.DataFrame:
+        """OHLCV bars at the given minute timeframe, oldest first."""
         request = CryptoBarsRequest(
             symbol_or_symbols=[self._config.symbol],
-            timeframe=BAR_TIMEFRAME,
-            start=datetime.now(timezone.utc) - timedelta(days=HISTORY_DAYS),
+            timeframe=TimeFrame(minutes, TimeFrameUnit.Minute),
+            start=datetime.now(timezone.utc) - lookback,
         )
         frame = self._data.get_crypto_bars(request).df
         if frame.empty:

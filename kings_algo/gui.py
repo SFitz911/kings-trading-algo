@@ -17,7 +17,7 @@ from .config import Config
 from .engine import BotState, TradingEngine
 
 REFRESH_MS = 200
-CHART_BARS = 120
+CHART_BARS = 480
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 
@@ -31,7 +31,8 @@ class Dashboard(tk.Tk):
         self._queue: queue.Queue[BotState] = queue.Queue()
         self._engine = TradingEngine(config, self._queue.put)
 
-        self.title("Kings Trading Algo - BTC/USD - RSI 5H Crossover")
+        self.title(f"Kings Trading Algo - {config.symbol} - "
+                   f"RSI {config.signal_minutes}m Crossover")
         self.geometry("1180x760")
         self.minsize(940, 640)
         self.configure(bg=theme.BG)
@@ -53,7 +54,7 @@ class Dashboard(tk.Tk):
 
         tk.Label(bar, text="KINGS TRADING ALGO", font=theme.FONT_TITLE,
                  bg=theme.BG, fg=theme.TEXT).pack(side="left")
-        subtitle = (f"   {self._config.symbol}  /  5H RSI-{self._config.rsi_period}"
+        subtitle = (f"   {self._config.symbol}  /  {self._config.signal_minutes}m RSI-{self._config.rsi_period}"
                     f"  /  long only  /  PAPER")
         tk.Label(bar, text=subtitle, font=theme.FONT_SMALL,
                  bg=theme.BG, fg=theme.MUTED).pack(side="left", padx=(10, 0))
@@ -81,7 +82,7 @@ class Dashboard(tk.Tk):
     def _build_stats(self) -> None:
         labels = {
             "price": "BTC PRICE",
-            "rsi": f"RSI({self._config.rsi_period}) 5H",
+            "rsi": f"RSI({self._config.rsi_period}) {self._config.signal_minutes}m",
             "position": "POSITION",
             "pnl": "UNREALIZED P&L",
             "equity": "EQUITY",
@@ -208,6 +209,17 @@ class Dashboard(tk.Tk):
         if state.bars is not None and state.rsi_series is not None:
             self._render_charts(state)
 
+    @staticmethod
+    def _draw_live_leg(axes, last_time, last_value, forming_time, live_value) -> None:
+        """Dashed segment from the last closed point out to the live value, so a
+        chart between bar closes still shows movement."""
+        if forming_time is None or not live_value:
+            return
+        axes.plot([last_time, forming_time], [last_value, live_value],
+                  color=theme.AMBER, linewidth=1.1, linestyle="--")
+        axes.plot([forming_time], [live_value], marker="o", markersize=3.5,
+                  color=theme.AMBER)
+
     def _waiting_for(self, state: BotState) -> str:
         """Spell out the condition the bot is waiting on, so a running-but-idle
         bot does not look like a broken one."""
@@ -249,14 +261,18 @@ class Dashboard(tk.Tk):
 
     def _render_charts(self, state: BotState) -> None:
         bars = state.bars.tail(CHART_BARS)
-        rsi_values = state.rsi_series.tail(CHART_BARS)
+        rsi_values = state.rsi_series.dropna()
+        rsi_values = rsi_values[rsi_values.index >= bars.index[0]]
 
         with matplotlib.rc_context(theme.MPL_STYLE):
             self._price_axes.clear()
             self._price_axes.plot(bars.index, bars["close"], color=theme.ACCENT, linewidth=1.4)
             self._price_axes.fill_between(bars.index, bars["close"].min(), bars["close"],
                                           color=theme.ACCENT, alpha=0.08)
-            self._price_axes.set_ylabel(f"{self._config.symbol}  (5H close)")
+            self._draw_live_leg(self._price_axes, bars.index[-1], bars["close"].iloc[-1],
+                                state.forming_time, state.price)
+            self._price_axes.set_ylabel(
+                f"{self._config.symbol}  ({self._config.chart_minutes}m)")
             self._price_axes.grid(alpha=0.25, linewidth=0.5)
             self._price_axes.tick_params(labelbottom=False)
             self._price_axes.yaxis.set_major_formatter(
@@ -272,9 +288,12 @@ class Dashboard(tk.Tk):
                 if level not in (RSI_OVERBOUGHT, RSI_OVERSOLD):
                     self._rsi_axes.axhline(level, color=theme.PURPLE, linestyle=":",
                                            linewidth=0.8, alpha=0.7)
+            self._draw_live_leg(self._rsi_axes, rsi_values.index[-1], rsi_values.iloc[-1],
+                                state.forming_time, state.rsi_live)
             self._rsi_axes.set_yticks([0, RSI_OVERSOLD, 50, RSI_OVERBOUGHT, 100])
             self._rsi_axes.set_ylim(0, 100)
-            self._rsi_axes.set_ylabel(f"RSI {self._config.rsi_period}")
+            self._rsi_axes.set_ylabel(
+                f"RSI {self._config.rsi_period}  ({self._config.signal_minutes}m)")
             self._rsi_axes.grid(alpha=0.25, linewidth=0.5)
 
         # Applied after every clear(): axes.clear() resets artist colors, which is

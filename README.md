@@ -3,13 +3,14 @@
 A long-only Bitcoin trading bot for Alpaca **paper** accounts, with a live desktop dashboard.
 
 - **Market:** `BTC/USD` on Alpaca crypto
-- **Signal:** RSI(14) on 5-hour bars, crossover based
+- **Signal:** RSI(14) on 15-minute bars, crossover based
+- **Chart:** 1-minute bars, so the dashboard shows real movement between signals
 - **Direction:** long only — it never shorts
 - **Execution:** market orders, notional-sized entries, full exit on the sell signal
 
 ## Strategy
 
-Signals are evaluated only on **closed** 5-hour candles (the in-progress bar is ignored, so
+Signals are evaluated only on **closed** 15-minute candles (the in-progress bar is ignored, so
 signals never repaint):
 
 | Condition | Action |
@@ -49,7 +50,9 @@ independently of the 5-hour bar poll.
 |---|---|---|
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | — | Alpaca paper credentials |
 | `SYMBOL` | `BTC/USD` | traded pair |
-| `RSI_PERIOD` | `14` | RSI lookback in 5H bars |
+| `SIGNAL_MINUTES` | `15` | candle size the strategy trades |
+| `CHART_MINUTES` | `1` | candle size drawn on the price chart |
+| `RSI_PERIOD` | `14` | RSI lookback in signal bars |
 | `RSI_ENTRY` | `50` | cross-up level that opens a long |
 | `RSI_EXIT` | `50` | cross-down level that closes it |
 | `TARGET_QTY` | `1` | whole tokens to buy per entry |
@@ -58,8 +61,7 @@ independently of the 5-hour bar poll.
 
 ## Hosting it 24/7
 
-The strategy trades 5-hour candles, so it needs a *scheduled check*, not a process that
-stays awake around the clock. [`.github/workflows/trade.yml`](.github/workflows/trade.yml)
+The strategy trades 15-minute candles, so it needs a check at least that often. [`.github/workflows/trade.yml`](.github/workflows/trade.yml)
 runs [`headless.py`](headless.py) every 15 minutes on GitHub Actions — free on public repos.
 
 Each run is a single evaluate-and-trade pass. Repeating it is safe because the open
@@ -75,10 +77,13 @@ To use it on your own fork, add two repository secrets under
 Everything else is set as plain env vars in the workflow. Trades appear in the run output
 and are uploaded as a `trades.csv` artifact.
 
-Two limits worth knowing: Actions cron is not punctual (GitHub delays runs under load,
-sometimes 5–15 minutes), and scheduled workflows are disabled after 60 days of repository
-inactivity. Neither matters on 5-hour bars. If you move to minute bars, switch to a
-persistent worker on Render instead.
+**Timing caveat:** GitHub delays scheduled runs under load, sometimes by 5–15 minutes. On
+15-minute bars that means the bot can act a bar or two late, or skip a check entirely. It
+will still trade — entries and exits are based on the latest closed bar, not on catching
+every one — but fills drift from the ideal signal price. For tighter timing, run
+`headless.py` on a loop from a persistent worker (Render, ~$7/mo) or any always-on machine.
+
+Scheduled workflows are also disabled after 60 days of repository inactivity.
 
 The dashboard stays local and reads live state from Alpaca, so you can open it any time to
 see what the scheduled bot has been doing.

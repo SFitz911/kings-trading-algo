@@ -18,6 +18,8 @@ class Config:
     api_key: str
     secret_key: str
     symbol: str
+    signal_minutes: int
+    chart_minutes: int
     rsi_period: int
     rsi_entry: float
     rsi_exit: float
@@ -38,6 +40,8 @@ def load_config() -> Config:
         api_key=_require("ALPACA_API_KEY"),
         secret_key=_require("ALPACA_SECRET_KEY"),
         symbol=os.getenv("SYMBOL", "BTC/USD"),
+        signal_minutes=int(os.getenv("SIGNAL_MINUTES", "15")),
+        chart_minutes=int(os.getenv("CHART_MINUTES", "1")),
         rsi_period=int(os.getenv("RSI_PERIOD", "14")),
         rsi_entry=float(os.getenv("RSI_ENTRY", "50")),
         rsi_exit=float(os.getenv("RSI_EXIT", "50")),
