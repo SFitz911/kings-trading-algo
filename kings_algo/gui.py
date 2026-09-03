@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 import tkinter as tk
 
 import matplotlib
@@ -16,6 +17,8 @@ from .engine import BotState, TradingEngine
 
 REFRESH_MS = 200
 CHART_BARS = 120
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
 
 STAT_CARDS = ("price", "rsi", "position", "equity", "signal")
 
@@ -61,6 +64,12 @@ class Dashboard(tk.Tk):
                                        bg=theme.GREEN, fg=theme.BG, font=theme.FONT,
                                        relief="flat", activebackground=theme.GREEN)
         self._start_button.pack(side="right")
+
+        self._blitz_button = tk.Button(bar, text="BLITZ TEST BUY", width=16,
+                                       command=self._blitz, bg=theme.PURPLE, fg=theme.BG,
+                                       font=theme.FONT, relief="flat",
+                                       activebackground=theme.PURPLE)
+        self._blitz_button.pack(side="right", padx=(0, 16))
 
         self._status = tk.Label(bar, text="- idle", font=theme.FONT_SMALL,
                                 bg=theme.BG, fg=theme.MUTED)
@@ -133,6 +142,19 @@ class Dashboard(tk.Tk):
         self._stop_button.configure(state="disabled")
         self._status.configure(text="- stopped", fg=theme.MUTED)
 
+    def _blitz(self) -> None:
+        """Fire a manual buy/sell off the UI thread so the window stays responsive."""
+        self._blitz_button.configure(state="disabled", text="SENDING...")
+        threading.Thread(target=self._blitz_worker, daemon=True).start()
+
+    def _blitz_worker(self) -> None:
+        try:
+            self._engine.blitz()
+        except Exception as error:
+            self._engine.log_error(f"BLITZ failed: {error}")
+        finally:
+            self.after(0, lambda: self._blitz_button.configure(state="normal"))
+
     def _on_close(self) -> None:
         self._engine.stop()
         self.destroy()
@@ -158,6 +180,10 @@ class Dashboard(tk.Tk):
         self._stats["signal"].configure(
             text=state.last_signal,
             fg={"BUY": theme.GREEN, "SELL": theme.AMBER}.get(state.last_signal, theme.MUTED))
+
+        if self._blitz_button["state"] != "disabled":
+            self._blitz_button.configure(
+                text="BLITZ TEST SELL" if state.position_qty else "BLITZ TEST BUY")
 
         if state.error:
             self._status.configure(text="- error", fg=theme.RED)
@@ -198,14 +224,16 @@ class Dashboard(tk.Tk):
 
             self._rsi_axes.clear()
             self._rsi_axes.plot(rsi_values.index, rsi_values, color=theme.TEXT, linewidth=1.2)
-            self._rsi_axes.axhline(self._config.rsi_entry, color=theme.GREEN,
-                                   linestyle="--", linewidth=0.8)
-            if self._config.rsi_exit != self._config.rsi_entry:
-                self._rsi_axes.axhline(self._config.rsi_exit, color=theme.AMBER,
-                                       linestyle="--", linewidth=0.8)
+            # Fixed reference bands: overbought 70 in red, oversold 30 in green.
+            self._rsi_axes.axhline(RSI_OVERBOUGHT, color=theme.RSI_UPPER, linewidth=0.7)
+            self._rsi_axes.axhline(RSI_OVERSOLD, color=theme.RSI_LOWER, linewidth=0.7)
+            # The levels the bot actually trades, when they differ from the bands.
+            for level in {self._config.rsi_entry, self._config.rsi_exit}:
+                if level not in (RSI_OVERBOUGHT, RSI_OVERSOLD):
+                    self._rsi_axes.axhline(level, color=theme.PURPLE, linestyle=":",
+                                           linewidth=0.8, alpha=0.7)
+            self._rsi_axes.set_yticks([0, RSI_OVERSOLD, 50, RSI_OVERBOUGHT, 100])
             self._rsi_axes.set_ylim(0, 100)
             self._rsi_axes.set_ylabel(f"RSI {self._config.rsi_period}")
             self._rsi_axes.grid(alpha=0.25, linewidth=0.5)
-            for label in self._rsi_axes.get_xticklabels():
-                label.set_fontsize(7)
         self._chart.draw_idle()

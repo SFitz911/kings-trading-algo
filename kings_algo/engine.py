@@ -55,6 +55,24 @@ class TradingEngine:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    @property
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive() and not self._stop.is_set())
+
+    def blitz(self) -> str:
+        """Manual test trade, independent of the RSI signal: buy when flat,
+        close the position when long. Returns the side that was sent."""
+        bars = self._broker.bars()
+        qty = self._broker.position_qty()
+        price = float(bars["close"].iloc[-1])
+        rsi_now = float(rsi(bars["close"].iloc[:-1], self._config.rsi_period).dropna().iloc[-1])
+        side = Signal.SELL if qty > 0 else Signal.BUY
+        self._log(f"BLITZ manual {side.value}")
+        self._execute(side, qty, price, rsi_now)
+        # Refresh the dashboard; do not let a manual click trigger a signal trade.
+        self._poll(trade=self.is_running)
+        return side.value
+
     def stop(self) -> None:
         self._stop.set()
         self._log("Bot stopped by user")
@@ -66,6 +84,14 @@ class TradingEngine:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         self._events.append(f"[{stamp}Z] {message}")
         del self._events[:-MAX_EVENTS]
+
+    def log_error(self, message: str) -> None:
+        """Surface a failure from outside the polling loop (e.g. a manual trade)."""
+        self._log(f"ERROR: {message}")
+        self.state = BotState(
+            **{**self.state.__dict__, "error": message, "events": list(self._events)}
+        )
+        self._on_update(self.state)
 
     def _record_trade(self, side: str, qty: float, price: float, rsi_value: float) -> None:
         is_new = not TRADE_LOG_PATH.exists()
@@ -93,7 +119,7 @@ class TradingEngine:
                 self._on_update(self.state)
             self._stop.wait(self._config.poll_seconds)
 
-    def _poll(self) -> None:
+    def _poll(self, trade: bool = True) -> None:
         bars = self._broker.bars()
         # The newest bar is still forming; only completed 5H candles produce signals.
         closed = bars.iloc[:-1]
@@ -103,12 +129,12 @@ class TradingEngine:
         bar_time = closed.index[-1]
 
         signal = decide(rsi_series, qty > 0, self._config.rsi_entry, self._config.rsi_exit)
-        if signal is not Signal.HOLD and bar_time != self._last_traded_bar:
+        if trade and signal is not Signal.HOLD and bar_time != self._last_traded_bar:
             self._last_traded_bar = bar_time
             qty = self._execute(signal, qty, price, float(rsi_series.dropna().iloc[-1]))
 
         self.state = BotState(
-            running=True,
+            running=self.is_running,
             connected=True,
             price=price,
             rsi=float(rsi_series.dropna().iloc[-1]),
