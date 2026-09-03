@@ -63,6 +63,16 @@ class TradingEngine:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def run_once(self) -> BotState:
+        """Single evaluate-and-trade pass for scheduled/headless runs.
+
+        Safe to re-run on a schedule: the open position is read from the broker
+        rather than held in memory, so a repeat run on the same bar will not
+        re-enter a trade it has already taken.
+        """
+        self._poll(trade=True)
+        return self.state
+
     def start_price_feed(self) -> None:
         """Fast loop for live price and unrealized P&L, independent of the bar poll
         so numbers keep moving whether or not the strategy is running."""

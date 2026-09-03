@@ -24,7 +24,7 @@ instead of the 50-line crossover.
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-gui.txt
 cp .env.example .env    # then fill in your Alpaca paper keys
 python run.py
 ```
@@ -56,10 +56,38 @@ independently of the 5-hour bar poll.
 | `FALLBACK_EQUITY_PCT` | `0.75` | fraction of equity spent when `TARGET_QTY` is unaffordable |
 | `POLL_SECONDS` | `60` | poll interval |
 
+## Hosting it 24/7
+
+The strategy trades 5-hour candles, so it needs a *scheduled check*, not a process that
+stays awake around the clock. [`.github/workflows/trade.yml`](.github/workflows/trade.yml)
+runs [`headless.py`](headless.py) every 15 minutes on GitHub Actions — free on public repos.
+
+Each run is a single evaluate-and-trade pass. Repeating it is safe because the open
+position is read from Alpaca rather than held in memory, so a re-run on the same bar
+will not double-enter.
+
+To use it on your own fork, add two repository secrets under
+**Settings → Secrets and variables → Actions**:
+
+- `ALPACA_API_KEY`
+- `ALPACA_SECRET_KEY`
+
+Everything else is set as plain env vars in the workflow. Trades appear in the run output
+and are uploaded as a `trades.csv` artifact.
+
+Two limits worth knowing: Actions cron is not punctual (GitHub delays runs under load,
+sometimes 5–15 minutes), and scheduled workflows are disabled after 60 days of repository
+inactivity. Neither matters on 5-hour bars. If you move to minute bars, switch to a
+persistent worker on Render instead.
+
+The dashboard stays local and reads live state from Alpaca, so you can open it any time to
+see what the scheduled bot has been doing.
+
 ## Layout
 
 ```
-run.py              entry point
+run.py              dashboard entry point
+headless.py         single-pass runner for scheduled hosting
 kings_algo/
   config.py         .env loading
   strategy.py       RSI + crossover decision (pure functions)
